@@ -49,6 +49,22 @@ folor --tail --filename '*.log' | grep ERROR
 echo -e "a\nb\nc" | folor -n 2
 ```
 
+## Why folor?
+
+`tail -f` can't handle recursive globs or pick up newly created files. The standard workaround is fragile:
+
+```bash
+# 😵 before — find the most recent jsonl file and tail it, hope no new ones appear
+tail -f $(find ~/.claude/projects -type f -name '*.jsonl' \
+  -exec stat -f '%m|%N' {} \; | sort -rnk1 -t '|' | head -1 | \
+  awk -F '|' '{print $2}') | jq .
+```
+
+```bash
+# 🎯 with folor — tail all jsonl files recursively, pipe to jq
+folor --tail -C ~/.claude/projects '*.jsonl' | jq .
+```
+
 ## How it works
 
 - **Discovery**: `globset` + `walkdir` recursively finds files matching your patterns
