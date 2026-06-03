@@ -1,0 +1,154 @@
+name: Release
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+concurrency:
+  group: release
+  cancel-in-progress: true
+
+jobs:
+  bump:
+    name: Bump version
+    runs-on: ubuntu-latest
+    outputs:
+      bumped: ${{ steps.bump.outputs.bumped }}
+      tag: ${{ steps.bump.outputs.tag }}
+      version: ${{ steps.bump.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Configure git
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+      - name: Determine and apply version bump
+        id: bump
+        run: |
+          bump_semver() {
+            local v=$1 l=$2
+            IFS='.' read -r maj min pat <<< "$v"
+            case "$l" in
+              major) echo "$((maj+1)).0.0" ;;
+              minor) echo "${maj}.$((min+1)).0" ;;
+              patch) echo "${maj}.${min}.$((pat+1))" ;;
+            esac
+          }
+
+          CURRENT=$(grep -oP '^version\s*=\s*"\K[^"]+' Cargo.toml)
+          PREV_TAG=$(git describe --tags --abbrev=0 --match 'v[0-9]*' 2>/dev/null || echo "")
+
+          if [ -n "$PREV_TAG" ]; then
+            COMMITS=$(git log "${PREV_TAG}..HEAD" --format="%s")
+          else
+            COMMITS=$(git log --format="%s")
+          fi
+
+          LEVEL=""
+          if echo "$COMMITS" | grep -qP '^\w+(\(.+\))?!:\s'; then
+            LEVEL="major"
+          elif echo "$COMMITS" | grep -qP '^feat(\(.+\))?:\s'; then
+            LEVEL="minor"
+          elif echo "$COMMITS" | grep -qP '^(fix|refactor|perf|revert)(\(.+\))?:\s'; then
+            LEVEL="patch"
+          fi
+
+          if [ -z "$LEVEL" ]; then
+            echo "bumped=false" >> "$GITHUB_OUTPUT"
+            echo "No semver-significant conventional commits found"
+            exit 0
+          fi
+
+          NEW_VERSION=$(bump_semver "$CURRENT" "$LEVEL")
+          TAG="v${NEW_VERSION}"
+
+          sed -i "s/^version = \"${CURRENT}\"/version = \"${NEW_VERSION}\"/" Cargo.toml
+          sed -i "/^name = \"folor\"\$/{n;s/version = \"${CURRENT}\"/version = \"${NEW_VERSION}\"/;}" Cargo.lock
+          git add Cargo.toml Cargo.lock
+          git commit -m "chore(version): bump to ${TAG}"
+          git tag -a "$TAG" -m "$TAG"
+
+          echo "bumped=true" >> "$GITHUB_OUTPUT"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "version=$NEW_VERSION" >> "$GITHUB_OUTPUT"
+          echo "Bumped ${CURRENT} -> ${NEW_VERSION} (${LEVEL})"
+
+      - name: Push version bump and tag
+        if: steps.bump.outputs.bumped == 'true'
+        run: |
+          git push origin main
+          git push --tags
+
+  build:
+    name: Build ${{ matrix.target }}
+    needs: bump
+    if: needs.bump.outputs.bumped == 'true'
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-gnu
+            os: ubuntu-latest
+          - target: aarch64-apple-darwin
+            os: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.bump.outputs.tag }}
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+
+      - name: Build
+        run: cargo build --release --target ${{ matrix.target }}
+
+      - name: Codesign (macOS)
+        if: ${{ matrix.os == 'macos-latest' }}
+        run: |
+          codesign --sign - --force target/${{ matrix.target }}/release/folor
+
+      - name: Package
+        shell: bash
+        run: |
+          cd target/${{ matrix.target }}/release
+          tar czf ../../../folor-${{ needs.bump.outputs.tag }}-${{ matrix.target }}.tar.gz folor
+          cd ../../..
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: folor-${{ matrix.target }}
+          path: folor-${{ needs.bump.outputs.tag }}-${{ matrix.target }}.tar.gz
+
+  release:
+    name: Create Release
+    needs: [bump, build]
+    if: needs.bump.outputs.bumped == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Download artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+      - name: Create release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ needs.bump.outputs.tag }}
+          generate_release_notes: true
+          files: artifacts/*.tar.gz
