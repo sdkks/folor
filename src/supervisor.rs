@@ -1,8 +1,9 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::atomic::AtomicBool;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::thread::JoinHandle;
+use std::time::Duration;
 
 use crossbeam_channel::{Receiver, Sender};
 
@@ -10,6 +11,7 @@ use crate::config::Config;
 use crate::file_ref::FileRef;
 use crate::output::OutputLine;
 use crate::reader;
+use crate::signal;
 
 /// A file currently being tailed by a reader thread.
 pub struct TrackedFile {
@@ -45,9 +47,16 @@ pub fn run_supervisor(
 ) {
     let mut tracked: HashMap<FileRef, TrackedFile> = HashMap::new();
 
-    while !stop.load(std::sync::atomic::Ordering::Relaxed) {
-        match discovery_rx.recv() {
+    while !stop.load(Ordering::Relaxed) && !signal::shutdown_requested() {
+        // Use recv_timeout to periodically check the stop flag and signal handler.
+        match discovery_rx.recv_timeout(Duration::from_secs(1)) {
             Ok(event) => {
+                // Also propagate signal shutdown to the stop flag so the caller
+                // (run_follow) can shut down the watcher and output threads.
+                if signal::shutdown_requested() {
+                    stop.store(true, Ordering::Relaxed);
+                }
+
                 let files = match event {
                     crate::watcher::DiscoveryEvent::Found { files } => files,
                 };
@@ -59,11 +68,11 @@ pub fn run_supervisor(
 
                 // Spawn readers for newly discovered files; update paths on rename.
                 for (file_ref, path) in &current_set {
+                    // Early exit: don't spawn more readers if shutdown was requested.
+                    if signal::shutdown_requested() || stop.load(Ordering::Relaxed) {
+                        break;
+                    }
                     if let Some(existing) = tracked.get_mut(file_ref) {
-                        // File was renamed. Update the tracked path so the supervisor's
-                        // bookkeeping is correct. Full rotation handling (notifying the
-                        // reader thread of the new path, following both old and new
-                        // inodes) is deferred to STORY-0003.
                         if existing.path != *path {
                             existing.path = path.clone();
                         }
@@ -101,9 +110,7 @@ pub fn run_supervisor(
                 let mut to_remove: Vec<FileRef> = Vec::new();
                 for (file_ref, tracked_file) in &tracked {
                     if !current_set.contains_key(file_ref) {
-                        tracked_file
-                            .stop_flag
-                            .store(true, std::sync::atomic::Ordering::Relaxed);
+                        tracked_file.stop_flag.store(true, Ordering::Relaxed);
                         to_remove.push(*file_ref);
                     }
                 }
@@ -115,7 +122,13 @@ pub fn run_supervisor(
                     }
                 }
             }
-            Err(crossbeam_channel::RecvError) => {
+            Err(crossbeam_channel::RecvTimeoutError::Timeout) => {
+                // No event within 1s — check stop flag and signals at loop top.
+                if signal::shutdown_requested() {
+                    stop.store(true, Ordering::Relaxed);
+                }
+            }
+            Err(crossbeam_channel::RecvTimeoutError::Disconnected) => {
                 // Channel disconnected — watcher exited.
                 break;
             }
@@ -124,9 +137,7 @@ pub fn run_supervisor(
 
     // Shutdown: signal all remaining readers to stop.
     for tracked_file in tracked.values() {
-        tracked_file
-            .stop_flag
-            .store(true, std::sync::atomic::Ordering::Relaxed);
+        tracked_file.stop_flag.store(true, Ordering::Relaxed);
     }
 
     // Join all reader threads.
