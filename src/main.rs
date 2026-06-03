@@ -2,7 +2,8 @@
 
 use clap::Parser;
 use config::{Cli, Config};
-use std::io::BufWriter;
+use is_terminal::IsTerminal;
+use termcolor::{ColorChoice, StandardStream};
 
 mod binary;
 mod config;
@@ -58,9 +59,25 @@ fn run_one_shot(config: &Config) {
         return;
     }
 
-    let prefix = files.len() > 1;
-    let stdout = std::io::stdout();
-    let mut writer = BufWriter::new(stdout.lock());
+    let is_tty = std::io::stdout().is_terminal();
+
+    // Determine whether to show filename prefixes:
+    //   --no-filename  → never show
+    //   --filename     → always show
+    //   auto           → show only when TTY and multiple files are matched
+    let show_prefix = if config.no_filename {
+        false
+    } else if config.show_filename {
+        true
+    } else {
+        is_tty && files.len() > 1
+    };
+
+    // Colorize prefixes only when attached to a terminal. Even if
+    // --filename forces prefixes in a pipe, colors stay off.
+    let use_color = is_tty && show_prefix;
+
+    let mut stdout = StandardStream::stdout(ColorChoice::Auto);
 
     for (path, _file_ref) in &files {
         if binary::is_binary_file(path) {
@@ -70,7 +87,9 @@ fn run_one_shot(config: &Config) {
 
         match reader::read_last_lines(path, config.lines) {
             Ok(lines) => {
-                if let Err(e) = output::print_lines(&mut writer, path, &lines, prefix) {
+                if let Err(e) =
+                    output::print_lines(&mut stdout, path, &lines, show_prefix, use_color)
+                {
                     eprintln!("folor: {}", e);
                     std::process::exit(2);
                 }
