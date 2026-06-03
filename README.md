@@ -78,22 +78,22 @@ folor --tail -n 1 --newer-than 2h -C ~/.claude/projects '*.jsonl' | jq -R 'fromj
 
 ## Flags
 
-| Flag | Default | Description |
-|------|---------|-------------|
-| `-F, --tail` | off | Follow mode: watch files for new lines |
-| `-n, --lines` | 50 | Number of lines to print from each file |
-| `-C, --directory` | `.` | Working directory for pattern resolution |
-| `--newer-than` | off | Only files modified in the last N (e.g. `2h`, `30m`) |
-| `--older-than` | off | Only files modified earlier than N |
-| `-x, --one-file-system` | off | Skip files on other filesystems |
-| `--no-truncation-reset` | off | Don't reset position on file truncation |
-| `--filename` | auto | Always prefix with filename |
-| `--no-filename` | auto | Never prefix with filename |
-| `--retry` | off | Track by filename — follow recreated files across renames (like `tail -F`) |
-| `--idle-timeout` | off | Exit after N seconds with no output from any file |
-| `--pid` | off | Exit when process with PID N terminates (Unix only) |
-| `--scan-interval` | 2 | Discovery scan interval in seconds |
-| `--deleted-grace` | 5 | Seconds before closing reader for deleted file |
+| Flag                    | Default | Description                                                                |
+| ----------------------- | ------- | -------------------------------------------------------------------------- |
+| `-F, --tail`            | off     | Follow mode: watch files for new lines                                     |
+| `-n, --lines`           | 50      | Number of lines to print from each file                                    |
+| `-C, --directory`       | `.`     | Working directory for pattern resolution                                   |
+| `--newer-than`          | off     | Only files modified in the last N (e.g. `2h`, `30m`)                       |
+| `--older-than`          | off     | Only files modified earlier than N                                         |
+| `-x, --one-file-system` | off     | Skip files on other filesystems                                            |
+| `--no-truncation-reset` | off     | Don't reset position on file truncation                                    |
+| `--filename`            | auto    | Always prefix with filename                                                |
+| `--no-filename`         | auto    | Never prefix with filename                                                 |
+| `--retry`               | off     | Track by filename — follow recreated files across renames (like `tail -F`) |
+| `--idle-timeout`        | off     | Exit after N seconds with no output from any file                          |
+| `--pid`                 | off     | Exit when process with PID N terminates (Unix only)                        |
+| `--scan-interval`       | 2       | Discovery scan interval in seconds                                         |
+| `--deleted-grace`       | 5       | Seconds before closing reader for deleted file                             |
 
 ## Supported platforms
 
@@ -102,4 +102,4 @@ folor --tail -n 1 --newer-than 2h -C ~/.claude/projects '*.jsonl' | jq -R 'fromj
 
 ## License
 
-MIT
+[MIT](./LICENSE)
