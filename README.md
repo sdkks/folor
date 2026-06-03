@@ -34,7 +34,8 @@ folor --tail '*.log'
 folor --tail '*.log' '*.jsonl'
 
 # Pipe to jq — filenames and colors suppressed automatically
-folor --tail '*.jsonl' | jq .
+# Use -R to read raw strings, fromjson? to skip invalid lines gracefully
+folor --tail '*.jsonl' | jq -R 'fromjson?'
 
 # Only tail files modified in the last 2 hours
 folor --tail --newer-than 2h '*.log'
@@ -65,7 +66,7 @@ tail -f $(find ~/.claude/projects -type f -name '*.jsonl' \
 
 ```bash
 # 🎯 with folor — tail only recent jsonl files, one line each, pipe to jq
-folor --tail -n 1 --newer-than 2h -C ~/.claude/projects '*.jsonl' | jq .
+folor --tail -n 1 --newer-than 2h -C ~/.claude/projects '*.jsonl' | jq -R 'fromjson?'
 ```
 
 ## How it works

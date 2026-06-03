@@ -3,6 +3,9 @@ use std::hash::{Hash, Hasher};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
+
 use crossbeam_channel::Receiver;
 use termcolor::{Color, ColorChoice, ColorSpec, StandardStream, WriteColor};
 
@@ -84,7 +87,12 @@ pub fn print_lines<W: WriteColor>(
 ///
 /// - `show_prefix`: whether to prefix each line with the source filename.
 /// - `use_color`: whether to colorize filename prefixes.
-pub fn run_output_thread(rx: Receiver<OutputLine>, show_prefix: bool, use_color: bool) {
+pub fn run_output_thread(
+    rx: Receiver<OutputLine>,
+    show_prefix: bool,
+    use_color: bool,
+    stop: Arc<AtomicBool>,
+) {
     let mut stream = StandardStream::stdout(ColorChoice::Auto);
     for output_line in rx {
         if let Err(e) = print_lines(
@@ -94,8 +102,8 @@ pub fn run_output_thread(rx: Receiver<OutputLine>, show_prefix: bool, use_color:
             show_prefix,
             use_color,
         ) {
-            // If stdout breaks (broken pipe, etc.), stop the output thread.
             if e.kind() == std::io::ErrorKind::BrokenPipe {
+                stop.store(true, Ordering::Relaxed);
                 break;
             }
             eprintln!("folor: output error: {}", e);
@@ -325,7 +333,7 @@ mod tests {
     fn run_output_thread_writes_lines() {
         let (tx, rx) = crossbeam_channel::bounded(16);
         let handle = std::thread::spawn(move || {
-            run_output_thread(rx, false, false);
+            run_output_thread(rx, false, false, Arc::new(AtomicBool::new(false)));
         });
         tx.send(OutputLine {
             display_path: PathBuf::from("f.log"),
@@ -347,7 +355,7 @@ mod tests {
     fn run_output_thread_with_prefix() {
         let (tx, rx) = crossbeam_channel::bounded(16);
         let handle = std::thread::spawn(move || {
-            run_output_thread(rx, true, false);
+            run_output_thread(rx, true, false, Arc::new(AtomicBool::new(false)));
         });
         tx.send(OutputLine {
             display_path: PathBuf::from("prefixed.log"),

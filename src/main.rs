@@ -120,8 +120,9 @@ fn run_follow(config: &Config) {
     let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
 
     // Spawn output thread.
+    let output_stop = Arc::clone(&stop);
     let output_handle = thread::spawn(move || {
-        output::run_output_thread(output_rx, show_prefix, use_color);
+        output::run_output_thread(output_rx, show_prefix, use_color, output_stop);
     });
 
     // Spawn watcher thread.
@@ -183,6 +184,9 @@ fn run_one_shot(config: &Config) {
                 if let Err(e) =
                     output::print_lines(&mut stdout, path, &lines, show_prefix, use_color)
                 {
+                    if e.kind() == std::io::ErrorKind::BrokenPipe {
+                        return;
+                    }
                     eprintln!("folor: {}", e);
                     std::process::exit(2);
                 }

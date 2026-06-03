@@ -124,10 +124,16 @@ pub fn follow_file(
                     if stop.load(Ordering::Relaxed) {
                         return;
                     }
-                    let _ = tx.send(OutputLine {
-                        display_path: display_path.clone(),
-                        line,
-                    });
+                    let _ = tx.send_timeout(
+                        OutputLine {
+                            display_path: display_path.clone(),
+                            line,
+                        },
+                        Duration::from_millis(100),
+                    );
+                    if stop.load(Ordering::Relaxed) {
+                        return;
+                    }
                 }
             }
             Err(e) => {
@@ -199,10 +205,16 @@ pub fn follow_file(
                         if stop.load(Ordering::Relaxed) {
                             return;
                         }
-                        let _ = tx.send(OutputLine {
-                            display_path: path.clone(),
-                            line,
-                        });
+                        let _ = tx.send_timeout(
+                            OutputLine {
+                                display_path: path.clone(),
+                                line,
+                            },
+                            Duration::from_millis(100),
+                        );
+                        if stop.load(Ordering::Relaxed) {
+                            return;
+                        }
                     }
                     position = current_size;
                 }
