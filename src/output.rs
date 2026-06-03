@@ -1,7 +1,17 @@
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
-use std::path::Path;
-use termcolor::{Color, ColorSpec, WriteColor};
+use std::io::Write;
+use std::path::{Path, PathBuf};
+
+use crossbeam_channel::Receiver;
+use termcolor::{Color, ColorChoice, ColorSpec, StandardStream, WriteColor};
+
+/// A single line emitted by a reader thread, tagged with the source file's display path.
+#[derive(Debug, Clone)]
+pub struct OutputLine {
+    pub display_path: PathBuf,
+    pub line: Vec<u8>,
+}
 
 /// Hash the path into a bucket index in `[0, 12)`.
 fn hash_bucket(path: &Path) -> u8 {
@@ -63,6 +73,35 @@ pub fn print_lines<W: WriteColor>(
         writer.write_all(b"\n")?;
     }
     Ok(())
+}
+
+/// Run the output thread: receives `OutputLine` messages from all reader threads
+/// and writes them to stdout through a single writer, guaranteeing that output
+/// is never interleaved at the byte level.
+///
+/// The thread owns `StandardStream<Stdout>` exclusively. It blocks on the
+/// receiver and exits when the channel is disconnected (all senders dropped).
+///
+/// - `show_prefix`: whether to prefix each line with the source filename.
+/// - `use_color`: whether to colorize filename prefixes.
+pub fn run_output_thread(rx: Receiver<OutputLine>, show_prefix: bool, use_color: bool) {
+    let mut stream = StandardStream::stdout(ColorChoice::Auto);
+    for output_line in rx {
+        if let Err(e) = print_lines(
+            &mut stream,
+            &output_line.display_path,
+            &[output_line.line],
+            show_prefix,
+            use_color,
+        ) {
+            // If stdout breaks (broken pipe, etc.), stop the output thread.
+            if e.kind() == std::io::ErrorKind::BrokenPipe {
+                break;
+            }
+            eprintln!("folor: output error: {}", e);
+        }
+    }
+    let _ = stream.flush();
 }
 
 #[cfg(test)]
@@ -254,5 +293,69 @@ mod tests {
         let b1 = hash_bucket(&PathBuf::from("/stable/path.log"));
         let b2 = hash_bucket(&PathBuf::from("/stable/path.log"));
         assert_eq!(b1, b2);
+    }
+
+    // --- OutputLine and output thread tests ---
+
+    #[test]
+    fn output_line_debug() {
+        let ol = OutputLine {
+            display_path: PathBuf::from("test.log"),
+            line: b"hello".to_vec(),
+        };
+        let debug = format!("{:?}", ol);
+        assert!(debug.contains("test.log"));
+        // Vec<u8> debug format uses decimal byte values, so we check for
+        // the presence of the struct name and path rather than raw text content.
+        assert!(debug.contains("OutputLine"));
+    }
+
+    #[test]
+    fn output_line_clone() {
+        let ol = OutputLine {
+            display_path: PathBuf::from("a.log"),
+            line: b"data".to_vec(),
+        };
+        let cloned = ol.clone();
+        assert_eq!(cloned.display_path, PathBuf::from("a.log"));
+        assert_eq!(cloned.line, b"data");
+    }
+
+    #[test]
+    fn run_output_thread_writes_lines() {
+        let (tx, rx) = crossbeam_channel::bounded(16);
+        let handle = std::thread::spawn(move || {
+            run_output_thread(rx, false, false);
+        });
+        tx.send(OutputLine {
+            display_path: PathBuf::from("f.log"),
+            line: b"line1".to_vec(),
+        })
+        .unwrap();
+        tx.send(OutputLine {
+            display_path: PathBuf::from("f.log"),
+            line: b"line2".to_vec(),
+        })
+        .unwrap();
+        drop(tx);
+        handle.join().unwrap();
+        // Output goes to real stdout in this test — the key assertion is
+        // that the thread joins cleanly without panic.
+    }
+
+    #[test]
+    fn run_output_thread_with_prefix() {
+        let (tx, rx) = crossbeam_channel::bounded(16);
+        let handle = std::thread::spawn(move || {
+            run_output_thread(rx, true, false);
+        });
+        tx.send(OutputLine {
+            display_path: PathBuf::from("prefixed.log"),
+            line: b"data".to_vec(),
+        })
+        .unwrap();
+        drop(tx);
+        handle.join().unwrap();
+        // Verify the thread exits cleanly.
     }
 }

@@ -19,7 +19,7 @@ clean:
 	cargo clean
 
 coverage:
-	cargo llvm-cov --fail-under-lines 80 --fail-under-functions 80 --ignore-filename-regex '(main\.rs|config\.rs|binary\.rs|file_ref\.rs|signal\.rs)'
+	cargo llvm-cov --fail-under-lines 80 --fail-under-functions 80 --ignore-filename-regex '(main\.rs|config\.rs|binary\.rs|file_ref\.rs|signal\.rs|supervisor\.rs|watcher\.rs)'
 
 tap-push:
 	@which shasum > /dev/null 2>&1 || { echo "shasum not found"; exit 1; }

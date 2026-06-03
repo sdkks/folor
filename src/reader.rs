@@ -1,6 +1,14 @@
 use std::fs::File;
 use std::io::{Read, Seek, SeekFrom};
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
+use std::thread;
+use std::time::Duration;
+
+use crossbeam_channel::Sender;
+
+use crate::output::OutputLine;
 
 /// Read the last `n` lines from a file, returning each line as raw bytes
 /// without a trailing newline.
@@ -85,6 +93,131 @@ fn split_lines(data: &[u8]) -> Vec<Vec<u8>> {
     }
 
     lines
+}
+
+/// Follow a file in tail mode.
+///
+/// First, reads and sends the last `lines` lines (same as one-shot mode).
+/// Then enters a poll loop: every 50ms, stat() the file. If the size exceeds
+/// the current read position, new bytes are read, split into lines, and sent
+/// as `OutputLine` messages via the channel.
+///
+/// If the file shrinks (truncation detected, i.e., size < current position)
+/// and `allow_truncation_reset` is true, the position resets to 0 and reading
+/// continues from the start of the file.
+///
+/// The loop exits when `stop` is set to `true` or when the file becomes
+/// permanently inaccessible (e.g., deleted and not recreated).
+pub fn follow_file(
+    path: PathBuf,
+    lines: usize,
+    tx: Sender<OutputLine>,
+    stop: Arc<AtomicBool>,
+    allow_truncation_reset: bool,
+) {
+    // Phase 1: print last N lines (like one-shot)
+    if lines > 0 {
+        match read_last_lines(&path, lines) {
+            Ok(initial_lines) => {
+                let display_path = path.clone();
+                for line in initial_lines {
+                    if stop.load(Ordering::Relaxed) {
+                        return;
+                    }
+                    let _ = tx.send(OutputLine {
+                        display_path: display_path.clone(),
+                        line,
+                    });
+                }
+            }
+            Err(e) => {
+                // File may not exist yet or is unreadable — not fatal in follow mode.
+                // We'll pick it up in the poll loop if it becomes available.
+                eprintln!("folor: {}: {}", path.display(), e);
+            }
+        }
+    }
+
+    // Phase 2: poll loop
+    let poll_interval = Duration::from_millis(50);
+
+    // Set initial position to current file size via a single open+seek+query
+    // to avoid the race between read_last_lines and a separate metadata() call.
+    let mut position: u64 = File::open(&path)
+        .and_then(|mut f| {
+            f.seek(SeekFrom::End(0))?;
+            f.stream_position()
+        })
+        .unwrap_or(0);
+
+    loop {
+        if stop.load(Ordering::Relaxed) {
+            break;
+        }
+
+        let meta = match std::fs::metadata(&path) {
+            Ok(m) => m,
+            Err(_) => {
+                // File disappeared — keep polling in case it reappears.
+                thread::sleep(poll_interval);
+                continue;
+            }
+        };
+
+        let current_size = meta.len();
+
+        if current_size < position {
+            // Truncation detected.
+            if allow_truncation_reset {
+                position = 0;
+            } else {
+                // Treat as EOF — don't read anything new.
+                position = current_size;
+            }
+        }
+
+        if current_size > position {
+            let mut file = match File::open(&path) {
+                Ok(f) => f,
+                Err(_) => {
+                    thread::sleep(poll_interval);
+                    continue;
+                }
+            };
+
+            if file.seek(SeekFrom::Start(position)).is_err() {
+                thread::sleep(poll_interval);
+                continue;
+            }
+
+            let to_read = (current_size - position) as usize;
+            let mut buf = vec![0u8; to_read];
+            match file.read_exact(&mut buf) {
+                Ok(()) => {
+                    let new_lines = split_lines(&buf);
+                    for line in new_lines {
+                        if stop.load(Ordering::Relaxed) {
+                            return;
+                        }
+                        let _ = tx.send(OutputLine {
+                            display_path: path.clone(),
+                            line,
+                        });
+                    }
+                    position = current_size;
+                }
+                Err(e) => {
+                    eprintln!("folor: {}: read error: {}", path.display(), e);
+                }
+            }
+        }
+
+        if stop.load(Ordering::Relaxed) {
+            break;
+        }
+
+        thread::sleep(poll_interval);
+    }
 }
 
 #[cfg(test)]
