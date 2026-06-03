@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2021"
 description = "Recursive tail -f with glob pattern matching"
 license = "MIT"
-repository = "https://github.com/saidakkas/folor"
+repository = "https://github.com/sdkks/folor"
 
 [[bin]]
 name = "folor"
@@ -28,6 +28,7 @@ notify = { version = "6", default-features = false }
 
 [dev-dependencies]
 tempfile = "3"
+filetime = "0.2"
 
 [profile.release]
 lto = true
