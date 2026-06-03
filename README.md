@@ -36,7 +36,10 @@ folor --tail '*.log' '*.jsonl'
 # Pipe to jq — filenames and colors suppressed automatically
 folor --tail '*.jsonl' | jq .
 
-# Skip files older than 2 hours
+# Only tail files modified in the last 2 hours
+folor --tail --newer-than 2h '*.log'
+
+# Only tail files modified more than 2 hours ago
 folor --tail --older-than 2h '*.log'
 
 # Stay on one filesystem (skip cross-device symlinks)
@@ -62,7 +65,7 @@ tail -f $(find ~/.claude/projects -type f -name '*.jsonl' \
 
 ```bash
 # 🎯 with folor — tail only recent jsonl files, one line each, pipe to jq
-folor --tail -n 1 --older-than 2h -C ~/.claude/projects '*.jsonl' | jq .
+folor --tail -n 1 --newer-than 2h -C ~/.claude/projects '*.jsonl' | jq .
 ```
 
 ## How it works
@@ -79,7 +82,8 @@ folor --tail -n 1 --older-than 2h -C ~/.claude/projects '*.jsonl' | jq .
 | `-F, --tail` | off | Follow mode: watch files for new lines |
 | `-n, --lines` | 50 | Number of lines to print from each file |
 | `-C, --directory` | `.` | Working directory for pattern resolution |
-| `--older-than` | off | Skip files older than this duration (e.g. `2h`, `30m`) |
+| `--newer-than` | off | Only files modified in the last N (e.g. `2h`, `30m`) |
+| `--older-than` | off | Only files modified earlier than N |
 | `-x, --one-file-system` | off | Skip files on other filesystems |
 | `--no-truncation-reset` | off | Don't reset position on file truncation |
 | `--filename` | auto | Always prefix with filename |

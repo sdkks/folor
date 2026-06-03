@@ -32,7 +32,11 @@ pub struct Cli {
     #[arg(short = 'C', long = "directory")]
     pub directory: Option<PathBuf>,
 
-    /// Skip files with mtime older than this duration (e.g. 2h, 30m, 1d)
+    /// Only tail files modified more recently than this (e.g. 2h, 30m, 1d)
+    #[arg(long = "newer-than", value_parser = parse_duration)]
+    pub newer_than: Option<Duration>,
+
+    /// Only tail files whose mtime is older than this (e.g. 2h, 30m, 1d)
     #[arg(long = "older-than", value_parser = parse_duration)]
     pub older_than: Option<Duration>,
 
@@ -80,7 +84,9 @@ pub struct Config {
     pub lines: usize,
     /// Working directory for relative path resolution.
     pub directory: Option<PathBuf>,
-    /// Maximum file age filter (skip older files).
+    /// Only include files modified more recently than this.
+    pub newer_than: Option<Duration>,
+    /// Only include files modified earlier than this.
     pub older_than: Option<Duration>,
     /// Stay within a single filesystem.
     pub one_file_system: bool,
@@ -130,6 +136,7 @@ impl Config {
             follow: cli.follow,
             lines: cli.lines,
             directory: cli.directory,
+            newer_than: cli.newer_than,
             older_than: cli.older_than,
             one_file_system: cli.one_file_system,
             no_truncation_reset: cli.no_truncation_reset,
@@ -151,6 +158,7 @@ mod tests {
             follow: false,
             lines: 50,
             directory: None,
+            newer_than: None,
             older_than: None,
             one_file_system: false,
             no_truncation_reset: false,
@@ -234,5 +242,13 @@ mod tests {
         cli.older_than = Some(std::time::Duration::from_secs(3600));
         let cfg = Config::from_cli(cli).unwrap();
         assert_eq!(cfg.older_than, Some(std::time::Duration::from_secs(3600)));
+    }
+
+    #[test]
+    fn newer_than_is_some() {
+        let mut cli = make_cli();
+        cli.newer_than = Some(std::time::Duration::from_secs(3600));
+        let cfg = Config::from_cli(cli).unwrap();
+        assert_eq!(cfg.newer_than, Some(std::time::Duration::from_secs(3600)));
     }
 }

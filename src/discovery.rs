@@ -107,12 +107,30 @@ pub fn discover(config: &Config) -> Result<Vec<(PathBuf, FileRef)>, String> {
             }
         }
 
-        // Older-than filter: skip files with mtime older than the configured duration
-        if let Some(max_age) = config.older_than {
+        // Time-based filters.
+        if let Some(min_age) = config.newer_than {
+            // --newer-than: keep files modified in the last N (age <= duration)
             match metadata.modified() {
                 Ok(modified) => match modified.elapsed() {
-                    Ok(age) if age > max_age => continue,
-                    Ok(_) => {} // within the time window
+                    Ok(age) if age > min_age => continue, // too old, skip
+                    Ok(_) => {}                           // within window, keep
+                    Err(e) => {
+                        eprintln!("folor: {}: time error: {}", path.display(), e);
+                        continue;
+                    }
+                },
+                Err(e) => {
+                    eprintln!("folor: {}: {}", path.display(), e);
+                    continue;
+                }
+            }
+        }
+        if let Some(max_age) = config.older_than {
+            // --older-than: keep files modified earlier than N (age >= duration)
+            match metadata.modified() {
+                Ok(modified) => match modified.elapsed() {
+                    Ok(age) if age < max_age => continue, // too new, skip
+                    Ok(_) => {}                           // within window, keep
                     Err(e) => {
                         eprintln!("folor: {}: time error: {}", path.display(), e);
                         continue;
@@ -144,6 +162,7 @@ mod tests {
             follow: false,
             lines: 50,
             directory: root,
+            newer_than: None,
             older_than: None,
             one_file_system: false,
             no_truncation_reset: false,
@@ -161,6 +180,7 @@ mod tests {
             follow: false,
             lines: 50,
             directory: None,
+            newer_than: None,
             older_than: None,
             one_file_system: false,
             no_truncation_reset: false,
@@ -235,22 +255,34 @@ mod tests {
     // --- S5: time-based filtering ---
 
     #[test]
-    fn older_than_filters_old_files() {
+    fn newer_than_keeps_recent_files() {
         let dir = tempfile::tempdir().expect("tempdir");
-        let recent = dir.path().join("recent.log");
-        std::fs::write(&recent, b"recent").unwrap();
+        std::fs::write(dir.path().join("recent.log"), b"recent").unwrap();
+
+        let mut config = make_config(vec!["*.log"], Some(dir.path().to_path_buf()));
+        config.newer_than = Some(std::time::Duration::from_secs(3600)); // 1 hour
+        let result = discover(&config).unwrap();
+
+        // recently-created file should be within the 1-hour window
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].0, dir.path().join("recent.log"));
+    }
+
+    #[test]
+    fn older_than_skips_recent_files() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        std::fs::write(dir.path().join("recent.log"), b"recent").unwrap();
 
         let mut config = make_config(vec!["*.log"], Some(dir.path().to_path_buf()));
         config.older_than = Some(std::time::Duration::from_secs(3600)); // 1 hour
         let result = discover(&config).unwrap();
 
-        // recently-created file should be within the 1-hour window
-        assert_eq!(result.len(), 1);
-        assert_eq!(result[0].0, recent);
+        // recently-created file should be skipped (age < 1h)
+        assert!(result.is_empty());
     }
 
     #[test]
-    fn older_than_zero_filters_all() {
+    fn older_than_zero_keeps_all() {
         let dir = tempfile::tempdir().expect("tempdir");
         std::fs::write(dir.path().join("app.log"), b"data").unwrap();
 
@@ -258,11 +290,8 @@ mod tests {
         config.older_than = Some(std::time::Duration::from_secs(0));
         let result = discover(&config).unwrap();
 
-        // Zero-duration filter keeps files whose mtime age > 0s — no file
-        // created moments ago will have age > 0s, so we should get at least one.
-        // On fast systems all files will have age > 0s, so this is filter-dependent.
-        // Just verify discover doesn't panic with zero duration.
-        assert!(result.len() <= 1);
+        // Zero-duration older-than: all files have age >= 0s
+        assert_eq!(result.len(), 1);
     }
 
     // --- S6: symlink / one-file-system handling ---

@@ -83,7 +83,7 @@ fn lines_zero_exits_without_output() {
 }
 
 #[test]
-fn older_than_filters_old_files() {
+fn older_than_shows_only_old_files() {
     let dir = tempfile::tempdir().unwrap();
     let old = dir.path().join("old.log");
     std::fs::write(&old, b"old\n").unwrap();
@@ -100,6 +100,36 @@ fn older_than_filters_old_files() {
         .arg("-n")
         .arg("5")
         .arg("--older-than")
+        .arg("1h")
+        .arg("*.log")
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
+        .unwrap();
+
+    let stdout = String::from_utf8(out.stdout).unwrap();
+    assert!(stdout.contains("old"));
+    assert!(!stdout.contains("fresh"));
+}
+
+#[test]
+fn newer_than_shows_only_recent_files() {
+    let dir = tempfile::tempdir().unwrap();
+    let old = dir.path().join("old.log");
+    std::fs::write(&old, b"old\n").unwrap();
+
+    let two_hours = filetime::FileTime::from_system_time(
+        std::time::SystemTime::now() - Duration::from_secs(7201),
+    );
+    filetime::set_file_mtime(&old, two_hours).unwrap();
+    std::fs::write(dir.path().join("fresh.log"), b"fresh\n").unwrap();
+
+    let out = Command::new(env!("CARGO_BIN_EXE_folor"))
+        .arg("-C")
+        .arg(dir.path())
+        .arg("-n")
+        .arg("5")
+        .arg("--newer-than")
         .arg("1h")
         .arg("*.log")
         .stdout(Stdio::piped())
