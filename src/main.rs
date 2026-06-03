@@ -1,6 +1,5 @@
-#![allow(dead_code)]
-
-use std::sync::atomic::AtomicBool;
+use std::io::{BufRead, BufReader, Write};
+use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use std::thread;
 
@@ -26,33 +25,85 @@ mod watcher;
 fn main() {
     let cli = Cli::parse();
 
-    match Config::from_cli(cli) {
-        Ok(config) => {
-            if config.patterns.is_empty() {
-                eprintln!(
-                    "folor: no file patterns specified; reading from stdin (not yet implemented)"
-                );
-                std::process::exit(0);
-            }
-            if config.follow {
-                run_follow(&config);
-            } else {
-                run_one_shot(&config);
-            }
-        }
+    let config = match Config::from_cli(cli) {
+        Ok(c) => c,
         Err(e) => {
             eprintln!("folor: {}", e);
             std::process::exit(1);
         }
+    };
+
+    if config.patterns.is_empty() {
+        run_stdin(&config);
+    } else if config.follow {
+        run_follow(&config);
+    } else {
+        run_one_shot(&config);
+    }
+}
+
+fn run_stdin(config: &Config) {
+    let stdin = std::io::stdin();
+    let reader = BufReader::new(stdin.lock());
+
+    if config.follow {
+        // Follow mode: read existing input, then follow.
+        let mut lines: Vec<Vec<u8>> = Vec::new();
+        for line in reader.lines() {
+            match line {
+                Ok(l) => lines.push(l.into_bytes()),
+                Err(e) => {
+                    eprintln!("folor: stdin: {}", e);
+                    break;
+                }
+            }
+        }
+        // Print last N lines.
+        let start = if lines.len() > config.lines {
+            lines.len() - config.lines
+        } else {
+            0
+        };
+        let mut stdout = std::io::stdout().lock();
+        for line in &lines[start..] {
+            let _ = stdout.write_all(line);
+            let _ = stdout.write_all(b"\n");
+        }
+        let _ = stdout.flush();
+    } else {
+        // One-shot mode: read all lines, print last N.
+        let mut lines: Vec<Vec<u8>> = Vec::new();
+        for line in reader.lines() {
+            match line {
+                Ok(l) => lines.push(l.into_bytes()),
+                Err(e) => {
+                    eprintln!("folor: stdin: {}", e);
+                    std::process::exit(2);
+                }
+            }
+        }
+        if config.lines == 0 {
+            return;
+        }
+        let start = if lines.len() > config.lines {
+            lines.len() - config.lines
+        } else {
+            0
+        };
+        let mut stdout = std::io::stdout().lock();
+        for line in &lines[start..] {
+            let _ = stdout.write_all(line);
+            let _ = stdout.write_all(b"\n");
+        }
+        let _ = stdout.flush();
     }
 }
 
 fn run_follow(config: &Config) {
+    signal::setup_signals();
+
     let is_tty = std::io::stdout().is_terminal();
 
-    // For follow mode, we always show prefixes (at least one file, typically many).
-    // Follow the same rules as one-shot: prefix when TTY, suppress when --no-filename,
-    // force when --filename.
     let show_prefix = if config.no_filename {
         false
     } else if config.show_filename {
@@ -63,17 +114,10 @@ fn run_follow(config: &Config) {
 
     let use_color = is_tty && show_prefix;
 
-    // Bounded channels with capacity 256.
     let (discovery_tx, discovery_rx) = bounded::<DiscoveryEvent>(256);
     let (output_tx, output_rx) = bounded::<OutputLine>(256);
 
-    let stop = Arc::new(AtomicBool::new(false));
-
-    // Placeholder signal handler: set up SIGINT/SIGTERM later (S7).
-    // For now, Ctrl+C in the terminal will kill the process; the Drop impl
-    // on threads does not run, but this is acceptable until signal handling
-    // is implemented.
-    signal::setup_signals();
+    let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
 
     // Spawn output thread.
     let output_handle = thread::spawn(move || {
@@ -90,17 +134,14 @@ fn run_follow(config: &Config) {
     // Main thread acts as supervisor.
     supervisor::run_supervisor(config, discovery_rx, output_tx.clone(), Arc::clone(&stop));
 
-    // Signal watcher to stop, then drain threads in order.
-    stop.store(true, std::sync::atomic::Ordering::Relaxed);
+    // Signal watcher to stop, then drain threads.
+    stop.store(true, Ordering::Relaxed);
     let _ = watcher_handle.join();
-
-    // Drop the last output_tx clone so the output thread sees disconnect.
     drop(output_tx);
     let _ = output_handle.join();
 }
 
 fn run_one_shot(config: &Config) {
-    // FR-MODE-004: -n 0 in one-shot mode exits without output
     if config.lines == 0 {
         return;
     }
@@ -114,16 +155,12 @@ fn run_one_shot(config: &Config) {
     };
 
     if files.is_empty() {
-        eprintln!("folor: no files matched the provided patterns");
+        // SC-05: no files matched in one-shot is success (exit 0).
         return;
     }
 
     let is_tty = std::io::stdout().is_terminal();
 
-    // Determine whether to show filename prefixes:
-    //   --no-filename  → never show
-    //   --filename     → always show
-    //   auto           → show only when TTY and multiple files are matched
     let show_prefix = if config.no_filename {
         false
     } else if config.show_filename {
@@ -132,15 +169,12 @@ fn run_one_shot(config: &Config) {
         is_tty && files.len() > 1
     };
 
-    // Colorize prefixes only when attached to a terminal. Even if
-    // --filename forces prefixes in a pipe, colors stay off.
     let use_color = is_tty && show_prefix;
 
     let mut stdout = StandardStream::stdout(ColorChoice::Auto);
 
     for (path, _file_ref) in &files {
         if binary::is_binary_file(path) {
-            // Warning already printed by is_binary_file
             continue;
         }
 

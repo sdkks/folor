@@ -93,6 +93,7 @@ pub struct Config {
     /// File discovery scan interval in seconds.
     pub scan_interval: u64,
     /// Grace period in seconds before closing a reader for a deleted inode.
+    #[allow(dead_code)]
     pub deleted_grace: u64,
 }
 

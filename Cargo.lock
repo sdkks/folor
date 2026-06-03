@@ -203,6 +203,7 @@ dependencies = [
  "globset",
  "humantime",
  "is-terminal",
+ "libc",
  "notify",
  "tempfile",
  "termcolor",

@@ -14,6 +14,7 @@ use crate::reader;
 /// A file currently being tailed by a reader thread.
 pub struct TrackedFile {
     /// The file's stable identity (device, inode).
+    #[allow(dead_code)]
     pub file_ref: FileRef,
     /// Current filesystem path to the file.
     pub path: PathBuf,
