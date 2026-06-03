@@ -7,7 +7,11 @@ Recursive `tail -f` with glob pattern matching.
 ## Install
 
 ```bash
+# Cargo
 cargo install folor
+
+# Homebrew
+brew tap sdkks/tap && brew install sdkks/tap/folor
 ```
 
 Or from source:
