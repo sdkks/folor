@@ -18,16 +18,23 @@ extern "C" fn hup_handler(_: libc::c_int) {
 /// deprecated signal(). Must be called early in `main`.
 pub fn setup_signals() {
     unsafe {
-        let shutdown_action = libc::sigaction {
-            sa_sigaction: sig_handler as *const () as usize,
-            sa_mask: 0,
-            sa_flags: 0,
-        };
-        let hup_action = libc::sigaction {
-            sa_sigaction: hup_handler as *const () as usize,
-            sa_mask: 0,
-            sa_flags: 0,
-        };
+        let mut shutdown_action: libc::sigaction = std::mem::zeroed();
+        let mut hup_action: libc::sigaction = std::mem::zeroed();
+
+        #[cfg(target_os = "linux")]
+        {
+            shutdown_action.sa_sigaction =
+                sig_handler as extern "C" fn(libc::c_int, *mut libc::siginfo_t, *mut libc::c_void);
+            shutdown_action.sa_flags = libc::SA_SIGINFO;
+            hup_action.sa_sigaction =
+                hup_handler as extern "C" fn(libc::c_int, *mut libc::siginfo_t, *mut libc::c_void);
+            hup_action.sa_flags = libc::SA_SIGINFO;
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            shutdown_action.sa_sigaction = sig_handler as *const () as usize;
+            hup_action.sa_sigaction = hup_handler as *const () as usize;
+        }
 
         if libc::sigaction(libc::SIGINT, &shutdown_action, std::ptr::null_mut()) != 0 {
             eprintln!("folor: failed to install SIGINT handler");
