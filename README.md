@@ -61,8 +61,8 @@ tail -f $(find ~/.claude/projects -type f -name '*.jsonl' \
 ```
 
 ```bash
-# 🎯 with folor — tail all jsonl files recursively, pipe to jq
-folor --tail -C ~/.claude/projects '*.jsonl' | jq .
+# 🎯 with folor — tail all jsonl files, start from last 1 line, pipe to jq
+folor --tail -n 1 -C ~/.claude/projects '*.jsonl' | jq .
 ```
 
 ## How it works
