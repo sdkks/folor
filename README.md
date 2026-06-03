@@ -89,6 +89,9 @@ folor --tail -n 1 --newer-than 2h -C ~/.claude/projects '*.jsonl' | jq -R 'fromj
 | `--no-truncation-reset` | off | Don't reset position on file truncation |
 | `--filename` | auto | Always prefix with filename |
 | `--no-filename` | auto | Never prefix with filename |
+| `--retry` | off | Track by filename — follow recreated files across renames (like `tail -F`) |
+| `--idle-timeout` | off | Exit after N seconds with no output from any file |
+| `--pid` | off | Exit when process with PID N terminates (Unix only) |
 | `--scan-interval` | 2 | Discovery scan interval in seconds |
 | `--deleted-grace` | 5 | Seconds before closing reader for deleted file |
 

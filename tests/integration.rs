@@ -1,5 +1,6 @@
 use std::io::Write;
 use std::process::{Command, Stdio};
+use std::thread;
 use std::time::Duration;
 
 fn scaffold(dir: &std::path::Path, files: &[(&str, &str)]) {
@@ -239,4 +240,93 @@ fn filename_flag_forces_prefixes() {
 
     let stdout = String::from_utf8(out.stdout).unwrap();
     assert!(stdout.contains(".log:"));
+}
+
+#[test]
+fn idle_timeout_exits_after_silence() {
+    let dir = tempfile::tempdir().unwrap();
+    scaffold(dir.path(), &[("app.log", "hello\n")]);
+
+    let mut child = Command::new(env!("CARGO_BIN_EXE_folor"))
+        .arg("--tail")
+        .arg("-n")
+        .arg("0")
+        .arg("-C")
+        .arg(dir.path())
+        .arg("--idle-timeout")
+        .arg("1")
+        .arg("*.log")
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+
+    // Should exit within a few seconds of idle timeout
+    let status = child.wait().unwrap();
+    assert!(status.success());
+}
+
+#[test]
+fn pid_exits_when_process_dies() {
+    let dir = tempfile::tempdir().unwrap();
+    scaffold(dir.path(), &[("app.log", "hello\n")]);
+
+    // Start a background sleep that we can explicitly kill
+    let mut sleeper = Command::new("sleep").arg("60").spawn().unwrap();
+    let pid = sleeper.id();
+
+    let mut child = Command::new(env!("CARGO_BIN_EXE_folor"))
+        .arg("--tail")
+        .arg("-n")
+        .arg("0")
+        .arg("-C")
+        .arg(dir.path())
+        .arg("--pid")
+        .arg(pid.to_string())
+        .arg("*.log")
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+
+    thread::sleep(Duration::from_millis(500));
+    sleeper.kill().unwrap();
+    sleeper.wait().unwrap();
+
+    // folor should detect the pid is gone and exit within a few seconds
+    let status = child.wait().unwrap();
+    assert!(status.success());
+}
+
+#[test]
+fn retry_follows_recreated_file() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("app.log"), b"line1\n").unwrap();
+
+    let mut child = Command::new(env!("CARGO_BIN_EXE_folor"))
+        .arg("--tail")
+        .arg("--retry")
+        .arg("-n")
+        .arg("0")
+        .arg("-C")
+        .arg(dir.path())
+        .arg("*.log")
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+
+    thread::sleep(Duration::from_millis(500));
+
+    // Rename + recreate (simulate logrotate)
+    std::fs::rename(dir.path().join("app.log"), dir.path().join("app.log.1")).unwrap();
+    std::fs::write(dir.path().join("app.log"), b"line2\nline3\n").unwrap();
+
+    thread::sleep(Duration::from_millis(1500));
+
+    child.kill().unwrap();
+    let out = child.wait_with_output().unwrap();
+    let stdout = String::from_utf8(out.stdout).unwrap();
+    assert!(stdout.contains("line2"));
+    assert!(stdout.contains("line3"));
 }
