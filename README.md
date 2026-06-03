@@ -67,7 +67,12 @@ tail -f $(find ~/.claude/projects -type f -name '*.jsonl' \
 ```bash
 # 🎯 with folor — tail only recent jsonl files, one line each, pipe to jq
 folor --tail -n 1 --newer-than 2h -C ~/.claude/projects '*.jsonl' | jq -R 'fromjson?'
+
+# Or convert to YAML on the way out with another one of my tools
+folor --tail -n 1 --newer-than 2h -C ~/.claude/projects '*.jsonl' | nesdit --format jsonl --output-format yaml
 ```
+
+More on `nesdit` [here.](https://github.com/sdkks/nesdit)
 
 ## How it works
 
