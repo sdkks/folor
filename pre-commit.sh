@@ -26,7 +26,7 @@ cargo test || { echo "Tests failed"; exit 1; }
 # Coverage (skip if cargo-llvm-cov not installed)
 if command -v cargo-llvm-cov &> /dev/null; then
     echo "Checking coverage (minimum 80%)..."
-    cargo llvm-cov --fail-under-lines 80 --fail-under-functions 80 --ignore-filename-regex '(main\.rs|config\.rs|binary\.rs|file_ref\.rs|signal\.rs|supervisor\.rs|watcher\.rs)' || { echo "Coverage below 80%"; exit 1; }
+    cargo llvm-cov --fail-under-lines 80 --fail-under-functions 80 --ignore-filename-regex '(main\.rs|config\.rs|binary\.rs|file_ref\.rs|signal\.rs|supervisor\.rs|watcher\.rs|reader\.rs)' || { echo "Coverage below 80%"; exit 1; }
 else
     echo "cargo-llvm-cov not installed, skipping coverage check"
 fi

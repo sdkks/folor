@@ -170,6 +170,10 @@ mod tests {
             no_filename: false,
             scan_interval: 2,
             deleted_grace: 5,
+            retry: false,
+            idle_timeout: None,
+            #[cfg(unix)]
+            pid: None,
         }
     }
 
@@ -188,6 +192,10 @@ mod tests {
             no_filename: false,
             scan_interval: 2,
             deleted_grace: 5,
+            retry: false,
+            idle_timeout: None,
+            #[cfg(unix)]
+            pid: None,
         };
         let result = discover(&config).unwrap();
         assert!(result.is_empty());

@@ -1,7 +1,7 @@
 use std::fs::File;
 use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
@@ -9,6 +9,13 @@ use std::time::Duration;
 use crossbeam_channel::Sender;
 
 use crate::output::OutputLine;
+
+pub(crate) fn now_millis() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as u64
+}
 
 /// Read the last `n` lines from a file, returning each line as raw bytes
 /// without a trailing newline.
@@ -114,6 +121,8 @@ pub fn follow_file(
     tx: Sender<OutputLine>,
     stop: Arc<AtomicBool>,
     allow_truncation_reset: bool,
+    retry: bool,
+    idle_ts: Option<Arc<AtomicU64>>,
 ) {
     // Phase 1: print last N lines (like one-shot)
     if lines > 0 {
@@ -124,6 +133,9 @@ pub fn follow_file(
                     if stop.load(Ordering::Relaxed) {
                         return;
                     }
+                    if let Some(ref ts) = idle_ts {
+                        ts.store(now_millis(), Ordering::Relaxed);
+                    }
                     let _ = tx.send_timeout(
                         OutputLine {
                             display_path: display_path.clone(),
@@ -133,6 +145,9 @@ pub fn follow_file(
                     );
                     if stop.load(Ordering::Relaxed) {
                         return;
+                    }
+                    if let Some(ref ts) = idle_ts {
+                        ts.store(now_millis(), Ordering::Relaxed);
                     }
                 }
             }
@@ -156,6 +171,22 @@ pub fn follow_file(
         })
         .unwrap_or(0);
 
+    let mut last_inode: Option<u64> = if retry {
+        std::fs::metadata(&path).ok().map(|m| {
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::MetadataExt;
+                m.ino()
+            }
+            #[cfg(not(unix))]
+            {
+                0
+            }
+        })
+    } else {
+        None
+    };
+
     loop {
         if stop.load(Ordering::Relaxed) {
             break;
@@ -171,6 +202,18 @@ pub fn follow_file(
         };
 
         let current_size = meta.len();
+
+        #[cfg(unix)]
+        if retry {
+            use std::os::unix::fs::MetadataExt;
+            let current_inode = meta.ino();
+            if let Some(prev) = last_inode {
+                if current_inode != prev {
+                    position = 0;
+                }
+            }
+            last_inode = Some(current_inode);
+        }
 
         if current_size < position {
             // Truncation detected.

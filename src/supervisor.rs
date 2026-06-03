@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::thread::JoinHandle;
 use std::time::Duration;
@@ -45,14 +45,28 @@ pub fn run_supervisor(
     output_tx: Sender<OutputLine>,
     stop: Arc<AtomicBool>,
 ) {
+    let idle_ts: Option<Arc<AtomicU64>> = config
+        .idle_timeout
+        .map(|_| Arc::new(AtomicU64::new(reader::now_millis())));
+    if config.retry {
+        run_supervisor_retry(config, discovery_rx, output_tx, stop, idle_ts);
+    } else {
+        run_supervisor_default(config, discovery_rx, output_tx, stop, idle_ts);
+    }
+}
+
+fn run_supervisor_default(
+    config: &Config,
+    discovery_rx: Receiver<crate::watcher::DiscoveryEvent>,
+    output_tx: Sender<OutputLine>,
+    stop: Arc<AtomicBool>,
+    idle_ts: Option<Arc<AtomicU64>>,
+) {
     let mut tracked: HashMap<FileRef, TrackedFile> = HashMap::new();
 
     while !stop.load(Ordering::Relaxed) && !signal::shutdown_requested() {
-        // Use recv_timeout to periodically check the stop flag and signal handler.
         match discovery_rx.recv_timeout(Duration::from_secs(1)) {
             Ok(event) => {
-                // Also propagate signal shutdown to the stop flag so the caller
-                // (run_follow) can shut down the watcher and output threads.
                 if signal::shutdown_requested() {
                     stop.store(true, Ordering::Relaxed);
                 }
@@ -66,9 +80,7 @@ pub fn run_supervisor(
                     current_set.insert(*file_ref, path.clone());
                 }
 
-                // Spawn readers for newly discovered files; update paths on rename.
                 for (file_ref, path) in &current_set {
-                    // Early exit: don't spawn more readers if shutdown was requested.
                     if signal::shutdown_requested() || stop.load(Ordering::Relaxed) {
                         break;
                     }
@@ -83,6 +95,7 @@ pub fn run_supervisor(
                         let reader_lines = config.lines;
                         let reader_stop_clone = Arc::clone(&reader_stop);
                         let allow_truncation_reset = !config.no_truncation_reset;
+                        let reader_idle_ts = idle_ts.clone();
 
                         let handle = std::thread::spawn(move || {
                             reader::follow_file(
@@ -91,6 +104,8 @@ pub fn run_supervisor(
                                 reader_tx,
                                 reader_stop_clone,
                                 allow_truncation_reset,
+                                false,
+                                reader_idle_ts,
                             );
                         });
 
@@ -106,7 +121,6 @@ pub fn run_supervisor(
                     }
                 }
 
-                // Stop readers for files that disappeared.
                 let mut to_remove: Vec<FileRef> = Vec::new();
                 for (file_ref, tracked_file) in &tracked {
                     if !current_set.contains_key(file_ref) {
@@ -123,24 +137,124 @@ pub fn run_supervisor(
                 }
             }
             Err(crossbeam_channel::RecvTimeoutError::Timeout) => {
-                // No event within 1s — check stop flag and signals at loop top.
                 if signal::shutdown_requested() {
                     stop.store(true, Ordering::Relaxed);
                 }
+                if let (Some(ref ts), Some(timeout)) = (&idle_ts, config.idle_timeout) {
+                    let elapsed = reader::now_millis() - ts.load(Ordering::Relaxed);
+                    if elapsed >= timeout * 1000 {
+                        stop.store(true, Ordering::Relaxed);
+                    }
+                }
+                if pid_exited(config) {
+                    stop.store(true, Ordering::Relaxed);
+                }
             }
-            Err(crossbeam_channel::RecvTimeoutError::Disconnected) => {
-                // Channel disconnected — watcher exited.
-                break;
-            }
+            Err(crossbeam_channel::RecvTimeoutError::Disconnected) => break,
         }
     }
 
-    // Shutdown: signal all remaining readers to stop.
     for tracked_file in tracked.values() {
         tracked_file.stop_flag.store(true, Ordering::Relaxed);
     }
+    for (_, mut tracked_file) in tracked {
+        if let Some(handle) = tracked_file.handle.take() {
+            let _ = handle.join();
+        }
+    }
+}
 
-    // Join all reader threads.
+fn pid_exited(config: &Config) -> bool {
+    #[cfg(unix)]
+    if let Some(pid) = config.pid {
+        if unsafe { libc::kill(pid as i32, 0) } != 0 {
+            return true;
+        }
+    }
+    false
+}
+
+fn run_supervisor_retry(
+    config: &Config,
+    discovery_rx: Receiver<crate::watcher::DiscoveryEvent>,
+    output_tx: Sender<OutputLine>,
+    stop: Arc<AtomicBool>,
+    idle_ts: Option<Arc<AtomicU64>>,
+) {
+    let mut tracked: HashMap<PathBuf, TrackedFile> = HashMap::new();
+
+    while !stop.load(Ordering::Relaxed) && !signal::shutdown_requested() {
+        match discovery_rx.recv_timeout(Duration::from_secs(1)) {
+            Ok(event) => {
+                if signal::shutdown_requested() {
+                    stop.store(true, Ordering::Relaxed);
+                }
+
+                let files = match event {
+                    crate::watcher::DiscoveryEvent::Found { files } => files,
+                };
+
+                for (path, file_ref) in &files {
+                    if signal::shutdown_requested() || stop.load(Ordering::Relaxed) {
+                        break;
+                    }
+                    if let Some(existing) = tracked.get_mut(path) {
+                        existing.file_ref = *file_ref;
+                    } else {
+                        let reader_stop = Arc::new(AtomicBool::new(false));
+                        let reader_tx = output_tx.clone();
+                        let reader_path = path.clone();
+                        let reader_lines = config.lines;
+                        let reader_stop_clone = Arc::clone(&reader_stop);
+                        let allow_truncation_reset = !config.no_truncation_reset;
+                        let reader_idle_ts = idle_ts.clone();
+
+                        let handle = std::thread::spawn(move || {
+                            reader::follow_file(
+                                reader_path,
+                                reader_lines,
+                                reader_tx,
+                                reader_stop_clone,
+                                allow_truncation_reset,
+                                true,
+                                reader_idle_ts,
+                            );
+                        });
+
+                        tracked.insert(
+                            path.clone(),
+                            TrackedFile {
+                                file_ref: *file_ref,
+                                path: path.clone(),
+                                stop_flag: reader_stop,
+                                handle: Some(handle),
+                            },
+                        );
+                    }
+                }
+                // Retry mode: never remove tracked files (FR1.3).
+            }
+            Err(crossbeam_channel::RecvTimeoutError::Timeout) => {
+                if signal::shutdown_requested() {
+                    stop.store(true, Ordering::Relaxed);
+                }
+                if let (Some(ref ts), Some(timeout)) = (&idle_ts, config.idle_timeout) {
+                    let elapsed = reader::now_millis() - ts.load(Ordering::Relaxed);
+                    if elapsed >= timeout * 1000 {
+                        stop.store(true, Ordering::Relaxed);
+                    }
+                }
+                if pid_exited(config) {
+                    stop.store(true, Ordering::Relaxed);
+                }
+            }
+            Err(crossbeam_channel::RecvTimeoutError::Disconnected) => break,
+        }
+    }
+
+    for tracked_file in tracked.values() {
+        tracked_file.stop_flag.store(true, Ordering::Relaxed);
+    }
     for (_, mut tracked_file) in tracked {
         if let Some(handle) = tracked_file.handle.take() {
             let _ = handle.join();

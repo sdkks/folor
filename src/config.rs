@@ -71,6 +71,19 @@ pub struct Cli {
     /// Grace period in seconds before closing a reader for a deleted inode
     #[arg(long = "deleted-grace", default_value = "5")]
     pub deleted_grace: u64,
+
+    /// Follow by filename rather than inode — reopens files if the inode changes
+    #[arg(long = "retry", default_value_t = false)]
+    pub retry: bool,
+
+    /// Exit follow mode after N seconds with no output from any watched file
+    #[arg(long = "idle-timeout", value_name = "SECONDS")]
+    pub idle_timeout: Option<u64>,
+
+    /// Exit when the process with PID N terminates (Unix only)
+    #[cfg(unix)]
+    #[arg(long = "pid", value_name = "PID")]
+    pub pid: Option<u32>,
 }
 
 /// Validated configuration derived from CLI arguments.
@@ -101,6 +114,13 @@ pub struct Config {
     /// Grace period in seconds before closing a reader for a deleted inode.
     #[allow(dead_code)]
     pub deleted_grace: u64,
+    /// Follow by filename rather than inode (tail -F behavior).
+    pub retry: bool,
+    /// Exit after no output for this many seconds.
+    pub idle_timeout: Option<u64>,
+    /// PID of process to track — exit when it terminates.
+    #[cfg(unix)]
+    pub pid: Option<u32>,
 }
 
 impl Config {
@@ -130,6 +150,13 @@ impl Config {
         if cli.deleted_grace == 0 {
             return Err("--deleted-grace must be greater than 0".to_string());
         }
+        if let Some(0) = cli.idle_timeout {
+            return Err("--idle-timeout must be greater than 0".to_string());
+        }
+        #[cfg(unix)]
+        if let Some(0) = cli.pid {
+            return Err("--pid must be greater than 0".to_string());
+        }
 
         Ok(Config {
             patterns: cli.patterns,
@@ -144,6 +171,10 @@ impl Config {
             no_filename: cli.no_filename,
             scan_interval: cli.scan_interval,
             deleted_grace: cli.deleted_grace,
+            retry: cli.retry,
+            idle_timeout: cli.idle_timeout,
+            #[cfg(unix)]
+            pid: cli.pid,
         })
     }
 }
@@ -166,6 +197,10 @@ mod tests {
             no_filename: false,
             scan_interval: 2,
             deleted_grace: 5,
+            retry: false,
+            idle_timeout: None,
+            #[cfg(unix)]
+            pid: None,
         }
     }
 
